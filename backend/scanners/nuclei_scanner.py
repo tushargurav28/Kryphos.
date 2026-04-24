@@ -1,0 +1,286 @@
+import asyncio
+import json
+import tempfile
+import os
+
+class NucleiScanner:
+    def __init__(self, env):
+        self.env = env
+    
+    async def _update_templates(self):
+        """Update Nuclei templates silently"""
+        try:
+            print("🔄 Updating Nuclei templates...")
+            process = await asyncio.create_subprocess_shell(
+                "nuclei -ut -silent",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=self.env
+            )
+            await process.wait()
+            print("✅ Nuclei templates updated")
+        except Exception as e:
+            print(f"⚠️ Template update failed: {e}")
+    
+    async def _read_nuclei_output(self, process, scan_id, manager, db):
+        """Read Nuclei output with proper buffer handling"""
+        results_count = 0
+        buffer = ""
+        
+        while True:
+            # Read chunk of output (not line-by-line to avoid buffer limits)
+            chunk = await process.stdout.read(8192)  # Read 8KB chunks
+            
+            if not chunk:
+                # Process remaining buffer
+                if buffer.strip():
+                    for line in buffer.strip().split('\n'):
+                        if line.strip() and line.strip().startswith('{'):
+                            try:
+                                data = json.loads(line.strip())
+                                severity = data.get('info', {}).get('severity', 'unknown')
+                                
+                                await manager.broadcast(scan_id, {
+                                    'type': 'vulnerability',
+                                    'phase': 'vulnerability',
+                                    'data': data,
+                                    'timestamp': ''
+                                })
+                                
+                                await db.save_result(scan_id, 'vulnerability', data)
+                                results_count += 1
+                                
+                                print(f"✓ Saved: [{severity.upper()}] {data.get('template-id', 'unknown')} | Total: {results_count}")
+                            except json.JSONDecodeError as e:
+                                print(f"❌ JSON parse error: {e}")
+                            except Exception as e:
+                                print(f"❌ Processing error: {e}")
+                break
+            
+            buffer += chunk.decode('utf-8', errors='ignore')
+            
+            # Process complete lines
+            while '\n' in buffer:
+                line, buffer = buffer.split('\n', 1)
+                line = line.strip()
+                
+                if line and line.startswith('{'):
+                    try:
+                        data = json.loads(line)
+                        severity = data.get('info', {}).get('severity', 'unknown')
+                        
+                        await manager.broadcast(scan_id, {
+                            'type': 'vulnerability',
+                            'phase': 'vulnerability',
+                            'data': data,
+                            'timestamp': ''
+                        })
+                        
+                        await db.save_result(scan_id, 'vulnerability', data)
+                        results_count += 1
+                        
+                        print(f"✓ Saved: [{severity.upper()}] {data.get('template-id', 'unknown')} | Total: {results_count}")
+                    except json.JSONDecodeError as e:
+                        print(f"❌ JSON parse error: {e}")
+                        continue
+                    except Exception as e:
+                        print(f"❌ Processing error: {e}")
+                        continue
+        
+        return results_count
+    
+    async def scan(self, target_file: str, scan_id: str, manager, db, timeout: int = 10):
+        """Run Nuclei on a file of URLs"""
+        await self._update_templates()
+        
+        # 🔥 CRITICAL: No -severity flag (defaults to ALL severities), No -stats
+        command = (
+            f"nuclei -l {target_file} "
+            f"-j -silent -rate-limit 50 -timeout {timeout} "
+            f"-nc"
+        )
+        
+        try:
+            print(f"🔬 Running Nuclei command...")
+            process = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=self.env
+            )
+            
+            results_count = await self._read_nuclei_output(process, scan_id, manager, db)
+            
+            await process.wait()
+            
+            print(f"✅ Nuclei scan complete - {results_count} findings")
+            
+            await manager.broadcast(scan_id, {
+                'type': 'terminal',
+                'phase': 'vulnerability',
+                'data': f'✅ Nuclei scan complete - {results_count} findings found',
+                'timestamp': ''
+            })
+            
+            return results_count
+            
+        except FileNotFoundError as e:
+            error_msg = f'❌ Nuclei not found! Install: go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest'
+            print(error_msg)
+            await manager.broadcast(scan_id, {
+                'type': 'error',
+                'phase': 'vulnerability',
+                'data': error_msg,
+                'timestamp': ''
+            })
+            return 0
+        except Exception as e:
+            error_msg = f'❌ Nuclei scan failed: {str(e)}'
+            print(error_msg)
+            import traceback
+            traceback.print_exc()
+            await manager.broadcast(scan_id, {
+                'type': 'error',
+                'phase': 'vulnerability',
+                'data': error_msg,
+                'timestamp': ''
+            })
+            return 0
+    
+    async def scan_single(self, url: str, scan_id: str, manager, db):
+        """Run Nuclei on a single URL"""
+        if not url:
+            return 0
+        
+        await self._update_templates()
+        
+        # 🔥 CRITICAL: No -severity flag (defaults to ALL severities)
+        command = f"echo '{url}' | nuclei -j -silent -rate-limit 50 -nc"
+        
+        try:
+            process = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=self.env
+            )
+            
+            results_count = await self._read_nuclei_output(process, scan_id, manager, db)
+            
+            await process.wait()
+            return results_count
+            
+        except Exception as e:
+            print(f"Nuclei single scan error: {e}")
+            return 0
+    
+    async def scan_urls(self, urls: list, scan_id: str, manager, db, timeout: int = 10):
+        """🔥 CRITICAL: Run Nuclei on a list of URLs"""
+        if not urls:
+            print("⚠️ No URLs provided for Nuclei scan")
+            await manager.broadcast(scan_id, {
+                'type': 'terminal',
+                'phase': 'vulnerability',
+                'data': '⚠️ No URLs provided for Nuclei scan',
+                'timestamp': ''
+            })
+            return 0
+        
+        print(f"🔬 scan_urls() called with {len(urls)} URLs")
+        
+        await self._update_templates()
+        
+        temp_file = None
+        try:
+            # 🔥 Create temp file with URLs
+            fd, temp_file = tempfile.mkstemp(suffix='.txt', prefix='nuclei_')
+            print(f"📝 Created temp file: {temp_file}")
+            
+            with os.fdopen(fd, 'w') as f:
+                for url in urls:
+                    if isinstance(url, dict):
+                        url_str = url.get('url', '')
+                    else:
+                        url_str = str(url)
+                    
+                    if url_str and not url_str.startswith('http'):
+                        url_str = f'https://{url_str}'
+                    
+                    if url_str:
+                        f.write(url_str + '\n')
+            
+            # 🔥 Verify file was created and has content
+            if not os.path.exists(temp_file):
+                raise Exception(f"Temp file not created: {temp_file}")
+            
+            with open(temp_file, 'r') as f:
+                url_count = sum(1 for line in f if line.strip())
+            
+            print(f"✅ Temp file created with {url_count} URLs")
+            
+            await manager.broadcast(scan_id, {
+                'type': 'terminal',
+                'phase': 'vulnerability',
+                'data': f'⚡ Running Nuclei on {url_count} URLs...',
+                'timestamp': ''
+            })
+            
+            # 🔥 CRITICAL: No -severity flag (defaults to ALL severities), No -stats
+            command = (
+                f"nuclei -l {temp_file} "
+                f"-j -silent -rate-limit 50 -timeout {timeout} "
+                f"-nc"
+            )
+            
+            print(f"🔬 Running: {command[:150]}...")
+            
+            process = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=self.env
+            )
+            
+            results_count = await self._read_nuclei_output(process, scan_id, manager, db)
+            
+            await process.wait()
+            
+            print(f"✅ Nuclei scan complete - {results_count} findings saved to database")
+            
+            await manager.broadcast(scan_id, {
+                'type': 'terminal',
+                'phase': 'vulnerability',
+                'data': f'✅ Nuclei scan complete - {results_count} findings found',
+                'timestamp': ''
+            })
+            await db.save_result(scan_id, 'terminal', {
+                'message': f'✅ Nuclei scan complete - {results_count} findings found',
+                'phase': 'vulnerability'
+            })
+            
+            return results_count
+            
+        except Exception as e:
+            error_msg = f'❌ Nuclei scan failed: {str(e)}'
+            print(error_msg)
+            import traceback
+            traceback.print_exc()
+            await manager.broadcast(scan_id, {
+                'type': 'error',
+                'phase': 'vulnerability',
+                'data': error_msg,
+                'timestamp': ''
+            })
+            await db.save_result(scan_id, 'terminal', {
+                'message': error_msg,
+                'phase': 'vulnerability'
+            })
+            return 0
+        finally:
+            # 🔥 Cleanup temp file
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.unlink(temp_file)
+                    print(f"🗑️ Cleaned up temp file: {temp_file}")
+                except:
+                    pass

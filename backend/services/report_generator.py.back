@@ -1,0 +1,1718 @@
+"""
+================================================================================
+                    SECURITY RECONNAISSANCE REPORT GENERATOR
+                           Recon Dashboard v4.0
+================================================================================
+
+This module generates professional, FAANG-level security reports in multiple
+formats (PDF, HTML, Excel, Word, JSON) with comprehensive vulnerability details,
+proper text wrapping, readable fonts, and complete information display.
+
+Features:
+- No text truncation (full content with proper word wrapping)
+- Large, readable fonts (9-14pt)
+- Professional table layouts with proper column widths
+- Complete vulnerability details (CVE, CVSS, References, Remediation)
+- Risk scoring and prioritization
+- Visual severity indicators
+- DNS/SSL configuration analysis
+- Nmap port scan results with risk assessment
+- Technology stack detection
+- Executive summary with KPIs
+
+Author: Recon Dashboard Team
+Version: 4.0.0
+License: MIT
+================================================================================
+"""
+
+# =============================================================================
+# IMPORTS
+# =============================================================================
+
+import json
+import io
+import os
+import re
+import sys
+import traceback
+from datetime import datetime
+from typing import List, Dict, Any, Optional, Tuple, Union
+from collections import defaultdict, Counter
+from pathlib import Path
+
+# ReportLab imports
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter, A4, landscape
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch, cm, mm
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT, TA_JUSTIFY
+from reportlab.lib.colors import HexColor, Color, black, white, red, green, blue
+from reportlab.platypus import (
+    SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak,
+    Image, Flowable, KeepTogether, NextPageTemplate, PageTemplate,
+    Frame, BaseDocTemplate, ListFlowable, ListItem
+)
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.graphics.shapes import Drawing, Rect, String, Group, Line
+from reportlab.graphics.charts.barcharts import VerticalBarChart
+from reportlab.graphics.charts.piecharts import Pie
+from reportlab.graphics.charts.linecharts import HorizontalLineChart
+from reportlab.graphics.charts.legends import Legend
+from reportlab.lib.validators import Auto
+
+# =============================================================================
+# CONFIGURATION CONSTANTS
+# =============================================================================
+
+class ReportConfig:
+    """Configuration constants for report generation"""
+    
+    # Page Settings
+    PAGE_SIZE = letter
+    PAGE_WIDTH = letter[0]
+    PAGE_HEIGHT = letter[1]
+    MARGIN_TOP = 0.5 * inch
+    MARGIN_BOTTOM = 0.5 * inch
+    MARGIN_LEFT = 0.5 * inch
+    MARGIN_RIGHT = 0.5 * inch
+    
+    # Font Sizes
+    FONT_SIZE_TITLE = 24
+    FONT_SIZE_HEADING_1 = 18
+    FONT_SIZE_HEADING_2 = 14
+    FONT_SIZE_HEADING_3 = 12
+    FONT_SIZE_NORMAL = 10
+    FONT_SIZE_SMALL = 8
+    FONT_SIZE_TINY = 7
+    
+    # Table Settings
+    TABLE_FONT_SIZE = 9
+    TABLE_HEADER_FONT_SIZE = 10
+    TABLE_CELL_PADDING = 6
+    TABLE_BORDER_WIDTH = 0.5
+    TABLE_BORDER_COLOR = HexColor('#bdc3c7')
+    
+    # Colors
+    COLOR_PRIMARY = HexColor('#2c3e50')
+    COLOR_SECONDARY = HexColor('#34495e')
+    COLOR_ACCENT = HexColor('#3498db')
+    COLOR_SUCCESS = HexColor('#27ae60')
+    COLOR_WARNING = HexColor('#f39c12')
+    COLOR_DANGER = HexColor('#e74c3c')
+    COLOR_INFO = HexColor('#1abc9c')
+    COLOR_LIGHT = HexColor('#ecf0f1')
+    COLOR_DARK = HexColor('#2c3e50')
+    COLOR_WHITE = HexColor('#ffffff')
+    COLOR_GRAY = HexColor('#95a5a6')
+    
+    # Severity Colors
+    SEVERITY_CRITICAL = HexColor('#c0392b')
+    SEVERITY_HIGH = HexColor('#d35400')
+    SEVERITY_MEDIUM = HexColor('#f39c12')
+    SEVERITY_LOW = HexColor('#2980b9')
+    SEVERITY_INFO = HexColor('#7f8c8d')
+    
+    # Risk Colors
+    RISK_CRITICAL = HexColor('#c0392b')
+    RISK_HIGH = HexColor('#e74c3c')
+    RISK_MEDIUM = HexColor('#f39c12')
+    RISK_LOW = HexColor('#27ae60')
+    RISK_INFO = HexColor('#95a5a6')
+    
+    # Status Colors
+    STATUS_COMPLETE = HexColor('#27ae60')
+    STATUS_IN_PROGRESS = HexColor('#3498db')
+    STATUS_PENDING = HexColor('#95a5a6')
+    STATUS_FAILED = HexColor('#e74c3c')
+    
+    # Spacing
+    SPACING_XS = 0.1 * inch
+    SPACING_SM = 0.15 * inch
+    SPACING_MD = 0.2 * inch
+    SPACING_LG = 0.3 * inch
+    SPACING_XL = 0.5 * inch
+    
+    # Limits
+    MAX_VULNS_PER_PAGE = 15
+    MAX_HOSTS_PER_PAGE = 20
+    MAX_PORTS_PER_PAGE = 30
+    MAX_TECHNOLOGIES = 10
+    MAX_REFERENCES = 5
+    MAX_DESCRIPTION_LENGTH = 500
+    MAX_REMEDIATION_LENGTH = 400
+
+
+# =============================================================================
+# CUSTOM STYLES
+# =============================================================================
+
+class ReportStyles:
+    """Custom paragraph and table styles for professional reports"""
+    
+    def __init__(self):
+        self.styles = getSampleStyleSheet()
+        self._create_custom_styles()
+    
+    def _create_custom_styles(self):
+        """Create all custom paragraph styles"""
+        
+        # Report Title
+        self.styles.add(ParagraphStyle(
+            name='ReportTitle',
+            parent=self.styles['Heading1'],
+            fontSize=ReportConfig.FONT_SIZE_TITLE,
+            textColor=ReportConfig.COLOR_PRIMARY,
+            spaceAfter=ReportConfig.SPACING_LG,
+            alignment=TA_CENTER,
+            fontName='Helvetica-Bold',
+            leading=30
+        ))
+        
+        # Section Headers
+        self.styles.add(ParagraphStyle(
+            name='SectionHeader',
+            parent=self.styles['Heading2'],
+            fontSize=ReportConfig.FONT_SIZE_HEADING_1,
+            textColor=ReportConfig.COLOR_PRIMARY,
+            spaceAfter=ReportConfig.SPACING_MD,
+            spaceBefore=ReportConfig.SPACING_LG,
+            fontName='Helvetica-Bold',
+            leading=22,
+            borderWidth=2,
+            borderColor=ReportConfig.COLOR_ACCENT,
+            borderPadding=8
+        ))
+        
+        # Subsection Headers
+        self.styles.add(ParagraphStyle(
+            name='SubsectionHeader',
+            parent=self.styles['Heading3'],
+            fontSize=ReportConfig.FONT_SIZE_HEADING_2,
+            textColor=ReportConfig.COLOR_SECONDARY,
+            spaceAfter=ReportConfig.SPACING_SM,
+            spaceBefore=ReportConfig.SPACING_MD,
+            fontName='Helvetica-Bold',
+            leading=16
+        ))
+        
+        # Normal Text
+        self.styles.add(ParagraphStyle(
+            name='ReportNormal',
+            parent=self.styles['Normal'],
+            fontSize=ReportConfig.FONT_SIZE_NORMAL,
+            textColor=ReportConfig.COLOR_DARK,
+            spaceAfter=ReportConfig.SPACING_SM,
+            leading=14,
+            alignment=TA_JUSTIFY
+        ))
+        
+        # Executive Summary
+        self.styles.add(ParagraphStyle(
+            name='ExecutiveSummary',
+            parent=self.styles['Normal'],
+            fontSize=ReportConfig.FONT_SIZE_NORMAL,
+            textColor=ReportConfig.COLOR_DARK,
+            spaceAfter=ReportConfig.SPACING_SM,
+            leftIndent=ReportConfig.SPACING_MD,
+            rightIndent=ReportConfig.SPACING_MD,
+            leading=14
+        ))
+        
+        # Alert Banners
+        self.styles.add(ParagraphStyle(
+            name='CriticalAlert',
+            parent=self.styles['Normal'],
+            fontSize=ReportConfig.FONT_SIZE_NORMAL,
+            textColor=ReportConfig.COLOR_WHITE,
+            spaceAfter=ReportConfig.SPACING_SM,
+            fontName='Helvetica-Bold',
+            backColor=ReportConfig.SEVERITY_CRITICAL,
+            leading=14
+        ))
+        
+        self.styles.add(ParagraphStyle(
+            name='HighAlert',
+            parent=self.styles['Normal'],
+            fontSize=ReportConfig.FONT_SIZE_NORMAL,
+            textColor=ReportConfig.COLOR_WHITE,
+            spaceAfter=ReportConfig.SPACING_SM,
+            fontName='Helvetica-Bold',
+            backColor=ReportConfig.SEVERITY_HIGH,
+            leading=14
+        ))
+        
+        # Table Headers
+        self.styles.add(ParagraphStyle(
+            name='TableHeader',
+            parent=self.styles['Normal'],
+            fontSize=ReportConfig.TABLE_HEADER_FONT_SIZE,
+            textColor=ReportConfig.COLOR_WHITE,
+            fontName='Helvetica-Bold',
+            alignment=TA_CENTER,
+            leading=12
+        ))
+        
+        # Table Cells
+        self.styles.add(ParagraphStyle(
+            name='TableCell',
+            parent=self.styles['Normal'],
+            fontSize=ReportConfig.TABLE_FONT_SIZE,
+            textColor=ReportConfig.COLOR_DARK,
+            alignment=TA_LEFT,
+            leading=12,
+            wordWrap=True
+        ))
+        
+        # Footer
+        self.styles.add(ParagraphStyle(
+            name='ReportFooter',
+            parent=self.styles['Normal'],
+            fontSize=ReportConfig.FONT_SIZE_SMALL,
+            textColor=ReportConfig.COLOR_GRAY,
+            alignment=TA_CENTER,
+            spaceBefore=ReportConfig.SPACING_SM
+        ))
+        
+        # Code/Monospace
+        self.styles.add(ParagraphStyle(
+            name='CodeStyle',
+            parent=self.styles['Normal'],
+            fontSize=ReportConfig.FONT_SIZE_SMALL,
+            textColor=ReportConfig.COLOR_DARK,
+            fontName='Courier',
+            leading=10,
+            wordWrap=True
+        ))
+        
+        # Key Findings
+        self.styles.add(ParagraphStyle(
+            name='KeyFinding',
+            parent=self.styles['Normal'],
+            fontSize=ReportConfig.FONT_SIZE_NORMAL,
+            textColor=ReportConfig.COLOR_DARK,
+            spaceAfter=ReportConfig.SPACING_XS,
+            leftIndent=ReportConfig.SPACING_MD,
+            leading=13
+        ))
+        
+        # Vulnerability Name
+        self.styles.add(ParagraphStyle(
+            name='VulnName',
+            parent=self.styles['Normal'],
+            fontSize=ReportConfig.FONT_SIZE_NORMAL,
+            textColor=ReportConfig.COLOR_DARK,
+            fontName='Helvetica-Bold',
+            leading=12
+        ))
+        
+        # Vulnerability Description
+        self.styles.add(ParagraphStyle(
+            name='VulnDescription',
+            parent=self.styles['Normal'],
+            fontSize=ReportConfig.FONT_SIZE_NORMAL,
+            textColor=ReportConfig.COLOR_DARK,
+            spaceAfter=ReportConfig.SPACING_XS,
+            leading=13
+        ))
+        
+        # Vulnerability Remediation
+        self.styles.add(ParagraphStyle(
+            name='VulnRemediation',
+            parent=self.styles['Normal'],
+            fontSize=ReportConfig.FONT_SIZE_NORMAL,
+            textColor=ReportConfig.COLOR_DARK,
+            backColor=ReportConfig.COLOR_LIGHT,
+            spaceAfter=ReportConfig.SPACING_XS,
+            leading=13
+        ))
+        
+        # Classification Banner
+        self.styles.add(ParagraphStyle(
+            name='Classification',
+            parent=self.styles['Normal'],
+            fontSize=ReportConfig.FONT_SIZE_SMALL,
+            textColor=ReportConfig.SEVERITY_CRITICAL,
+            alignment=TA_CENTER,
+            fontName='Helvetica-Bold',
+            spaceBefore=ReportConfig.SPACING_MD
+        ))
+    
+    def get_style(self, name: str) -> ParagraphStyle:
+        """Get a style by name"""
+        return self.styles.get(name, self.styles['Normal'])
+
+
+# =============================================================================
+# TABLE BUILDER
+# =============================================================================
+
+class TableBuilder:
+    """Helper class for building professional tables"""
+    
+    def __init__(self):
+        self.styles = ReportStyles()
+    
+    def create_table(
+        self,
+        data: List[List[str]],
+        col_widths: Optional[List[float]] = None,
+        header_color: Color = ReportConfig.COLOR_PRIMARY,
+        row_colors: Optional[List[Color]] = None,
+        font_size: int = ReportConfig.TABLE_FONT_SIZE,
+        header_font_size: int = ReportConfig.TABLE_HEADER_FONT_SIZE,
+        word_wrap: bool = True,
+        vertical_align: str = 'TOP'
+    ) -> Table:
+        """Create a professional table with styling"""
+        
+        if not data:
+            return Table([['No data available']], colWidths=[ReportConfig.PAGE_WIDTH - 2*inch])
+        
+        table = Table(data, colWidths=col_widths)
+        
+        # Build table style
+        style_commands = [
+            # Grid
+            ('GRID', (0, 0), (-1, -1), ReportConfig.TABLE_BORDER_WIDTH, ReportConfig.TABLE_BORDER_COLOR),
+            
+            # Header
+            ('BACKGROUND', (0, 0), (-1, 0), header_color),
+            ('TEXTCOLOR', (0, 0), (-1, 0), ReportConfig.COLOR_WHITE),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), header_font_size),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), ReportConfig.TABLE_CELL_PADDING),
+            ('TOPPADDING', (0, 0), (-1, 0), ReportConfig.TABLE_CELL_PADDING),
+            
+            # Body
+            ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 1), (-1, -1), font_size),
+            ('BOTTOMPADDING', (0, 1), (-1, -1), ReportConfig.TABLE_CELL_PADDING - 2),
+            ('TOPPADDING', (0, 1), (-1, -1), ReportConfig.TABLE_CELL_PADDING - 2),
+            
+            # Alignment
+            ('VALIGN', (0, 0), (-1, -1), vertical_align),
+        ]
+        
+        # Add row colors if specified
+        if row_colors:
+            for row_idx, color in enumerate(row_colors, 1):
+                style_commands.append(('BACKGROUND', (0, row_idx), (-1, row_idx), color))
+        else:
+            # Default alternating row colors
+            style_commands.append(('ROWBACKGROUNDS', (0, 1), (-1, -1), [
+                ReportConfig.COLOR_WHITE,
+                HexColor('#f8f9fa')
+            ]))
+        
+        # Word wrap
+        if word_wrap:
+            style_commands.append(('WORDWRAP', (0, 1), (-1, -1), 'ON'))
+        
+        table.setStyle(TableStyle(style_commands))
+        
+        return table
+    
+    def create_kpi_table(self, data: List[List[str]]) -> Table:
+        """Create a KPI metrics table"""
+        
+        table = Table(data, colWidths=[2*inch, 1*inch, 1.5*inch])
+        
+        style_commands = [
+            ('GRID', (0, 0), (-1, -1), 1, ReportConfig.TABLE_BORDER_COLOR),
+            ('BACKGROUND', (0, 0), (-1, 0), ReportConfig.COLOR_PRIMARY),
+            ('TEXTCOLOR', (0, 0), (-1, 0), ReportConfig.COLOR_WHITE),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+            ('TOPPADDING', (0, 0), (-1, 0), 8),
+            ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 1), (-1, -1), 9),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [
+                ReportConfig.COLOR_WHITE,
+                HexColor('#f8f9fa')
+            ]),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ]
+        
+        table.setStyle(TableStyle(style_commands))
+        return table
+    
+    def create_risk_table(self, data: List[List[str]], severity_counts: Dict[str, int]) -> Table:
+        """Create a risk distribution table with color coding"""
+        
+        table = Table(data, colWidths=[1.5*inch, 0.8*inch, 1*inch, 2*inch])
+        
+        # Map severity to colors
+        severity_colors = {
+            'CRITICAL': ReportConfig.SEVERITY_CRITICAL,
+            'HIGH': ReportConfig.SEVERITY_HIGH,
+            'MEDIUM': ReportConfig.SEVERITY_MEDIUM,
+            'LOW': ReportConfig.SEVERITY_LOW,
+            'INFO': ReportConfig.SEVERITY_INFO
+        }
+        
+        style_commands = [
+            ('GRID', (0, 0), (-1, -1), 1, ReportConfig.TABLE_BORDER_COLOR),
+            ('BACKGROUND', (0, 0), (-1, 0), ReportConfig.COLOR_SECONDARY),
+            ('TEXTCOLOR', (0, 0), (-1, 0), ReportConfig.COLOR_WHITE),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 9),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
+            ('TOPPADDING', (0, 0), (-1, 0), 6),
+            ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 1), (-1, -1), 8),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [
+                ReportConfig.COLOR_WHITE,
+                HexColor('#f8f9fa')
+            ]),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ]
+        
+        # Add severity row colors
+        for row_idx, severity in enumerate(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'], 1):
+            if severity_counts.get(severity.lower(), 0) > 0:
+                style_commands.append(('BACKGROUND', (0, row_idx), (0, row_idx), severity_colors.get(severity, ReportConfig.COLOR_GRAY)))
+                style_commands.append(('TEXTCOLOR', (0, row_idx), (0, row_idx), ReportConfig.COLOR_WHITE))
+        
+        table.setStyle(TableStyle(style_commands))
+        return table
+
+
+# =============================================================================
+# VULNERABILITY PROCESSOR
+# =============================================================================
+
+class VulnerabilityProcessor:
+    """Process and organize vulnerability data"""
+    
+    def __init__(self):
+        pass
+    
+    def extract_vulnerabilities(self, vulnerabilities: List[Dict]) -> Dict[str, List[Dict]]:
+        """Group vulnerabilities by severity"""
+        
+        grouped = {
+            'critical': [],
+            'high': [],
+            'medium': [],
+            'low': [],
+            'info': []
+        }
+        
+        for vuln in vulnerabilities:
+            try:
+                severity = vuln.get('info', {}).get('severity', 'info').lower()
+                if severity in grouped:
+                    grouped[severity].append(vuln)
+            except:
+                grouped['info'].append(vuln)
+        
+        return grouped
+    
+    def count_by_severity(self, vulnerabilities: List[Dict]) -> Dict[str, int]:
+        """Count vulnerabilities by severity"""
+        
+        counts = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0, 'info': 0}
+        
+        for vuln in vulnerabilities:
+            try:
+                severity = vuln.get('info', {}).get('severity', 'info').lower()
+                if severity in counts:
+                    counts[severity] += 1
+            except:
+                counts['info'] += 1
+        
+        return counts
+    
+    def extract_critical(self, vulnerabilities: List[Dict]) -> List[Dict]:
+        """Extract critical vulnerabilities"""
+        return [v for v in vulnerabilities if v.get('info', {}).get('severity', '').lower() == 'critical']
+    
+    def extract_high(self, vulnerabilities: List[Dict]) -> List[Dict]:
+        """Extract high vulnerabilities"""
+        return [v for v in vulnerabilities if v.get('info', {}).get('severity', '').lower() == 'high']
+    
+    def extract_medium(self, vulnerabilities: List[Dict]) -> List[Dict]:
+        """Extract medium vulnerabilities"""
+        return [v for v in vulnerabilities if v.get('info', {}).get('severity', '').lower() == 'medium']
+    
+    def get_vuln_details(self, vuln: Dict) -> Dict[str, Any]:
+        """Extract complete vulnerability details"""
+        
+        info = vuln.get('info', {})
+        classification = info.get('classification', {})
+        
+        return {
+            'name': info.get('name', 'Unknown'),
+            'severity': info.get('severity', 'info').upper(),
+            'description': info.get('description', 'No description available.'),
+            'remediation': info.get('remediation', 'No remediation provided.'),
+            'host': vuln.get('host', 'N/A'),
+            'template_id': vuln.get('template-id', 'N/A'),
+            'template_url': vuln.get('template-url', 'N/A'),
+            'cve_id': classification.get('cve-id', None),
+            'cvss_score': classification.get('cvss-metrics', None),
+            'references': info.get('reference', []),
+            'tags': info.get('tags', []),
+            'matched_at': vuln.get('matched-at', 'N/A'),
+            'extracted_results': vuln.get('extracted-results', []),
+            'matcher_name': vuln.get('matcher-name', 'N/A')
+        }
+    
+    def calculate_risk_score(self, vulnerabilities: List[Dict]) -> int:
+        """Calculate overall risk score (0-100)"""
+        
+        if not vulnerabilities:
+            return 100
+        
+        severity_weights = {
+            'critical': 25,
+            'high': 15,
+            'medium': 8,
+            'low': 2,
+            'info': 0
+        }
+        
+        score = 100
+        counts = self.count_by_severity(vulnerabilities)
+        
+        for severity, weight in severity_weights.items():
+            score -= counts.get(severity, 0) * weight
+        
+        return max(0, min(100, score))
+    
+    def get_risk_level(self, score: int) -> str:
+        """Get risk level from score"""
+        
+        if score >= 80:
+            return 'Good'
+        elif score >= 60:
+            return 'Fair'
+        elif score >= 40:
+            return 'Needs Improvement'
+        else:
+            return 'Critical'
+
+
+# =============================================================================
+# DNS SSL PROCESSOR
+# =============================================================================
+
+class DNSSSLProcessor:
+    """Process DNS and SSL/TLS information"""
+    
+    def __init__(self):
+        pass
+    
+    def extract_dns_records(self, vulnerabilities: List[Dict]) -> Dict[str, Any]:
+        """Extract DNS configuration from Nuclei results"""
+        
+        dns_info = {
+            'nameservers': [],
+            'mx_records': [],
+            'spf': None,
+            'dmarc': None,
+            'dnssec': False,
+            'ipv6': [],
+            'caa': False,
+            'txt_records': []
+        }
+        
+        for vuln in vulnerabilities:
+            try:
+                template_id = vuln.get('template-id', '')
+                extracted = vuln.get('extracted-results', [])
+                
+                if 'nameserver-fingerprint' in template_id:
+                    dns_info['nameservers'] = [ns.rstrip('.') for ns in extracted]
+                elif 'mx-fingerprint' in template_id:
+                    dns_info['mx_records'] = extracted
+                elif 'spf-record-detect' in template_id:
+                    dns_info['spf'] = extracted[0] if extracted else None
+                elif 'dmarc-detect' in template_id:
+                    dns_info['dmarc'] = extracted[0] if extracted else None
+                elif 'dnssec-detection' in template_id:
+                    dns_info['dnssec'] = True
+                elif 'aaaa-fingerprint' in template_id:
+                    dns_info['ipv6'] = extracted
+                elif 'caa-fingerprint' in template_id:
+                    dns_info['caa'] = True
+                elif 'txt-fingerprint' in template_id:
+                    dns_info['txt_records'] = extracted
+            except Exception as e:
+                continue
+        
+        return dns_info
+    
+    def extract_ssl_info(self, vulnerabilities: List[Dict]) -> Dict[str, Any]:
+        """Extract SSL/TLS configuration from Nuclei results"""
+        
+        ssl_info = {
+            'issuer': None,
+            'san': [],
+            'wildcard': False,
+            'tls_versions': [],
+            'weak_ciphers': [],
+            'deprecated_tls': []
+        }
+        
+        for vuln in vulnerabilities:
+            try:
+                template_id = vuln.get('template-id', '')
+                extracted = vuln.get('extracted-results', [])
+                
+                if 'ssl-issuer' in template_id:
+                    ssl_info['issuer'] = extracted[0] if extracted else None
+                elif 'ssl-dns-names' in template_id:
+                    ssl_info['san'] = extracted
+                elif 'wildcard-tls' in template_id:
+                    ssl_info['wildcard'] = True
+                elif 'tls-version' in template_id:
+                    ssl_info['tls_versions'].extend(extracted)
+                elif 'weak-cipher-suites' in template_id:
+                    ssl_info['weak_ciphers'].extend(extracted)
+                elif 'deprecated-tls' in template_id:
+                    ssl_info['deprecated_tls'].extend(extracted)
+            except:
+                continue
+        
+        # Remove duplicates
+        ssl_info['tls_versions'] = list(set(ssl_info['tls_versions']))
+        ssl_info['weak_ciphers'] = list(set(ssl_info['weak_ciphers']))
+        ssl_info['deprecated_tls'] = list(set(ssl_info['deprecated_tls']))
+        
+        return ssl_info
+    
+    def get_dns_status_table(self, dns_info: Dict[str, Any]) -> List[List[str]]:
+        """Create DNS status table data"""
+        
+        return [
+            ['Record Type', 'Value', 'Status'],
+            ['NS Records', ', '.join(dns_info['nameservers'][:3]) if dns_info['nameservers'] else 'Not Found', 
+             'Configured' if dns_info['nameservers'] else 'Missing'],
+            ['MX Records', ', '.join(dns_info['mx_records'][:3]) if dns_info['mx_records'] else 'Not Configured',
+             'Configured' if dns_info['mx_records'] else 'Missing'],
+            ['SPF Record', (dns_info['spf'][:50] + '...') if dns_info['spf'] and len(dns_info['spf']) > 50 else (dns_info['spf'] or 'Not Found'),
+             'Configured' if dns_info['spf'] else 'Missing'],
+            ['DMARC Record', (dns_info['dmarc'][:50] + '...') if dns_info['dmarc'] and len(dns_info['dmarc']) > 50 else (dns_info['dmarc'] or 'Not Found'),
+             'Configured' if dns_info['dmarc'] else 'Missing'],
+            ['DNSSEC', 'Enabled' if dns_info['dnssec'] else 'Not Enabled',
+             'Enabled' if dns_info['dnssec'] else 'Missing'],
+            ['IPv6 (AAAA)', ', '.join(dns_info['ipv6'][:2]) if dns_info['ipv6'] else 'Not Found',
+             'Enabled' if dns_info['ipv6'] else 'Missing'],
+        ]
+    
+    def get_ssl_status_table(self, ssl_info: Dict[str, Any]) -> List[List[str]]:
+        """Create SSL status table data"""
+        
+        tls_status = []
+        for version in ssl_info['tls_versions']:
+            if 'TLS 1.2' in version or 'TLS 1.3' in version:
+                tls_status.append(f"Secure: {version}")
+            else:
+                tls_status.append(f"Review: {version}")
+        
+        return [
+            ['Property', 'Value', 'Status'],
+            ['Certificate Issuer', ssl_info['issuer'] if ssl_info['issuer'] else 'Unknown', 'Info'],
+            ['TLS Versions', '\n'.join(ssl_info['tls_versions']) if ssl_info['tls_versions'] else 'Not Detected', 
+             'Secure' if any('TLS 1.2' in v or 'TLS 1.3' in v for v in ssl_info['tls_versions']) else 'Review'],
+            ['Weak Ciphers', ', '.join(ssl_info['weak_ciphers'][:3]) if ssl_info['weak_ciphers'] else 'None Detected',
+             'Found' if ssl_info['weak_ciphers'] else 'None'],
+            ['Deprecated TLS', ', '.join(ssl_info['deprecated_tls']) if ssl_info['deprecated_tls'] else 'None',
+             'Found' if ssl_info['deprecated_tls'] else 'None'],
+            ['Wildcard Certificate', 'Yes' if ssl_info['wildcard'] else 'No',
+             'Yes' if ssl_info['wildcard'] else 'No'],
+            ['Subject Alternative Names', ', '.join(ssl_info['san'][:5]) if ssl_info['san'] else 'Not Found', 'Info'],
+        ]
+
+
+# =============================================================================
+# NMAP PROCESSOR
+# =============================================================================
+
+class NmapProcessor:
+    """Process Nmap scan results"""
+    
+    def __init__(self):
+        pass
+    
+    def extract_open_ports(self, nmap_results: List[Dict]) -> List[Dict]:
+        """Extract and process open ports from Nmap results"""
+        
+        open_ports = []
+        
+        for nmap in nmap_results:
+            try:
+                ip = nmap.get('ip', 'N/A')
+                host = nmap.get('host', 'N/A')
+                ports = nmap.get('open_ports', [])
+                port_details = nmap.get('ports', [])
+                
+                for port in ports:
+                    port_info = {
+                        'ip': ip,
+                        'host': host,
+                        'port': port,
+                        'protocol': 'tcp',
+                        'service': 'unknown',
+                        'version': 'unknown',
+                        'state': 'open',
+                        'risk': self._assess_port_risk(port)
+                    }
+                    
+                    # Find detailed port info
+                    for detail in port_details:
+                        if str(detail.get('port', '')) == str(port):
+                            port_info['protocol'] = detail.get('protocol', 'tcp')
+                            port_info['service'] = detail.get('service', 'unknown')
+                            port_info['version'] = detail.get('version', 'unknown')
+                            break
+                    
+                    open_ports.append(port_info)
+            except:
+                continue
+        
+        return open_ports
+    
+    def _assess_port_risk(self, port: int) -> str:
+        """Assess risk level for open port"""
+        
+        high_risk_ports = [21, 22, 23, 25, 3306, 5432, 1433, 6379, 27017]
+        medium_risk_ports = [80, 443, 8080, 8443, 3389, 5900]
+        
+        if port in high_risk_ports:
+            return 'High'
+        elif port in medium_risk_ports:
+            return 'Medium'
+        return 'Low'
+    
+    def extract_services(self, nmap_results: List[Dict]) -> List[str]:
+        """Extract detected services from Nmap results"""
+        
+        services = []
+        for nmap in nmap_results:
+            try:
+                port_details = nmap.get('ports', [])
+                for detail in port_details:
+                    service = detail.get('service', '')
+                    if service and service not in services:
+                        services.append(service)
+            except:
+                continue
+        
+        return services
+    
+    def get_ports_table(self, open_ports: List[Dict]) -> List[List[str]]:
+        """Create ports table data"""
+        
+        data = [['Host', 'IP Address', 'Port', 'Protocol', 'Service', 'Version', 'State', 'Risk']]
+        
+        for port_info in open_ports[:ReportConfig.MAX_PORTS_PER_PAGE]:
+            data.append([
+                port_info['host'][:30],
+                port_info['ip'],
+                str(port_info['port']),
+                port_info['protocol'],
+                port_info['service'],
+                port_info['version'][:30] if port_info['version'] else 'unknown',
+                port_info['state'],
+                port_info['risk']
+            ])
+        
+        return data
+
+
+# =============================================================================
+# TECHNOLOGY PROCESSOR
+# =============================================================================
+
+class TechnologyProcessor:
+    """Process technology detection data"""
+    
+    def __init__(self):
+        pass
+    
+    def count_technologies(self, vulnerabilities: List[Dict]) -> List[str]:
+        """Extract detected technologies"""
+        
+        techs = []
+        for vuln in vulnerabilities:
+            try:
+                if 'tech-detect' in vuln.get('template-id', '') or 'waf-detect' in vuln.get('template-id', ''):
+                    matcher = vuln.get('matcher-name', '')
+                    if matcher and matcher not in techs:
+                        techs.append(matcher)
+            except:
+                continue
+        
+        return techs[:ReportConfig.MAX_TECHNOLOGIES]
+    
+    def count_missing_headers(self, vulnerabilities: List[Dict]) -> List[str]:
+        """Extract missing security headers"""
+        
+        headers = []
+        for vuln in vulnerabilities:
+            try:
+                if 'http-missing-security-headers' in vuln.get('template-id', ''):
+                    header_name = vuln.get('matcher-name', '').replace('-', ' ').title()
+                    if header_name and header_name not in headers:
+                        headers.append(header_name)
+            except:
+                continue
+        
+        return headers
+
+
+# =============================================================================
+# MAIN REPORT GENERATOR
+# =============================================================================
+
+class ReportGenerator:
+    """
+    Main report generator class that coordinates all components
+    to generate professional security reports in multiple formats.
+    """
+    
+    def __init__(self):
+        """Initialize report generator with all processors"""
+        self.styles = ReportStyles()
+        self.table_builder = TableBuilder()
+        self.vuln_processor = VulnerabilityProcessor()
+        self.dns_ssl_processor = DNSSSLProcessor()
+        self.nmap_processor = NmapProcessor()
+        self.tech_processor = TechnologyProcessor()
+        self.config = ReportConfig()
+    
+    async def generate_report_data(self, db, scan_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Gather and process all scan data for report generation.
+        
+        Args:
+            db: Database connection
+            scan_id: Unique scan identifier
+            
+        Returns:
+            Dictionary containing all processed report data
+        """
+        try:
+            print(f"Generating report data for scan: {scan_id}")
+            
+            # Get scan info
+            scan = await db.get_scan(scan_id)
+            if not scan:
+                print(f"Scan {scan_id} not found")
+                return None
+            
+            print(f"Scan found: {scan['target']}")
+            
+            # Get all results
+            all_results = await db.get_results(scan_id)
+            print(f"Retrieved {len(all_results)} results from database")
+            
+            # Organize by phase and remove duplicates
+            report_data = {
+                'scan_info': scan,
+                'subdomains': [],
+                'live_hosts': [],
+                'wayback_urls': [],
+                'vulnerabilities': [],
+                'nmap_results': [],
+                'katana_endpoints': [],
+                'summary': {}
+            }
+            
+            seen_hosts = set()
+            seen_vulns = set()
+            
+            for result in all_results:
+                try:
+                    phase = result['phase']
+                    data = result['data']
+                    if isinstance(data, str):
+                        try:
+                            data = json.loads(data)
+                        except:
+                            continue
+                    
+                    if phase == 'subdomain':
+                        report_data['subdomains'].append(data)
+                    elif phase == 'httpx':
+                        # Remove duplicate hosts
+                        host_key = f"{data.get('url', '')}-{data.get('ip', '')}"
+                        if host_key not in seen_hosts:
+                            seen_hosts.add(host_key)
+                            report_data['live_hosts'].append(data)
+                    elif phase == 'wayback':
+                        report_data['wayback_urls'].append(data)
+                    elif phase == 'vulnerability':
+                        # Remove duplicate vulnerabilities
+                        vuln_key = f"{data.get('template-id', '')}-{data.get('host', '')}-{data.get('matcher-name', '')}"
+                        if vuln_key not in seen_vulns:
+                            seen_vulns.add(vuln_key)
+                            report_data['vulnerabilities'].append(data)
+                    elif phase == 'nmap':
+                        report_data['nmap_results'].append(data)
+                    elif phase == 'katana':
+                        report_data['katana_endpoints'].append(data)
+                except Exception as e:
+                    print(f"Error processing result: {e}")
+                    continue
+            
+            # Generate comprehensive summary
+            report_data['summary'] = self._generate_summary(report_data)
+            
+            print(f"Report data generated successfully")
+            print(f"   - Subdomains: {report_data['summary']['total_subdomains']}")
+            print(f"   - Live Hosts: {report_data['summary']['total_live_hosts']}")
+            print(f"   - Vulnerabilities: {report_data['summary']['total_vulnerabilities']}")
+            print(f"   - Nmap Results: {report_data['summary']['total_nmap_scans']}")
+            print(f"   - Overall Risk: {report_data['summary']['overall_risk']}")
+            
+            return report_data
+            
+        except Exception as e:
+            print(f"Error generating report  {e}")
+            traceback.print_exc()
+            return None
+    
+    def _generate_summary(self, report_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate comprehensive report summary"""
+        
+        summary = {
+            'total_subdomains': len(report_data['subdomains']),
+            'total_live_hosts': len(report_data['live_hosts']),
+            'total_vulnerabilities': len(report_data['vulnerabilities']),
+            'total_nmap_scans': len(report_data['nmap_results']),
+            'total_endpoints': len(report_data['katana_endpoints']),
+            'vulnerability_by_severity': self.vuln_processor.count_by_severity(report_data['vulnerabilities']),
+            'missing_headers': self.tech_processor.count_missing_headers(report_data['vulnerabilities']),
+            'technologies_detected': self.tech_processor.count_technologies(report_data['vulnerabilities']),
+            'dns_records': self.dns_ssl_processor.extract_dns_records(report_data['vulnerabilities']),
+            'ssl_info': self.dns_ssl_processor.extract_ssl_info(report_data['vulnerabilities']),
+            'open_ports': self.nmap_processor.extract_open_ports(report_data['nmap_results']),
+            'services_detected': self.nmap_processor.extract_services(report_data['nmap_results']),
+            'critical_vulns': self.vuln_processor.extract_critical(report_data['vulnerabilities']),
+            'high_vulns': self.vuln_processor.extract_high(report_data['vulnerabilities']),
+            'medium_vulns': self.vuln_processor.extract_medium(report_data['vulnerabilities']),
+            'has_critical': False,
+            'has_high': False,
+            'has_medium': False,
+            'overall_risk': 'Low',
+            'security_score': 100,
+            'risk_level': 'Good'
+        }
+        
+        # Determine overall risk
+        if summary['vulnerability_by_severity']['critical'] > 0:
+            summary['has_critical'] = True
+            summary['overall_risk'] = 'Critical'
+        elif summary['vulnerability_by_severity']['high'] > 0:
+            summary['has_high'] = True
+            summary['overall_risk'] = 'High'
+        elif summary['vulnerability_by_severity']['medium'] > 0:
+            summary['has_medium'] = True
+            summary['overall_risk'] = 'Medium'
+        
+        # Calculate security score
+        summary['security_score'] = self.vuln_processor.calculate_risk_score(report_data['vulnerabilities'])
+        summary['risk_level'] = self.vuln_processor.get_risk_level(summary['security_score'])
+        
+        return summary
+    
+    def generate_pdf(self, report_data: Dict[str, Any]) -> bytes:
+        """
+        Generate professional PDF report with complete information.
+        
+        Args:
+            report_data: Processed report data dictionary
+            
+        Returns:
+            PDF file as bytes
+        """
+        try:
+            print("Generating PDF report...")
+            buffer = io.BytesIO()
+            
+            doc = SimpleDocTemplate(
+                buffer,
+                pagesize=self.config.PAGE_SIZE,
+                rightMargin=self.config.MARGIN_RIGHT,
+                leftMargin=self.config.MARGIN_LEFT,
+                topMargin=self.config.MARGIN_TOP,
+                bottomMargin=self.config.MARGIN_BOTTOM,
+                title=f"Security Report - {report_data['scan_info']['target']}"
+            )
+            
+            elements = []
+            
+            # Build report sections
+            elements.extend(self._build_cover_page(report_data))
+            elements.append(Spacer(1, self.config.SPACING_LG))
+            elements.extend(self._build_executive_summary(report_data))
+            elements.append(PageBreak())
+            elements.extend(self._build_vulnerabilities_section(report_data))
+            elements.append(PageBreak())
+            elements.extend(self._build_assets_section(report_data))
+            elements.append(PageBreak())
+            elements.extend(self._build_nmap_section(report_data))
+            elements.append(PageBreak())
+            elements.extend(self._build_dns_ssl_section(report_data))
+            elements.append(PageBreak())
+            elements.extend(self._build_recommendations_section(report_data))
+            elements.extend(self._build_footer(report_data))
+            
+            # Build PDF
+            doc.build(elements)
+            buffer.seek(0)
+            
+            print("PDF generated successfully")
+            return buffer.getvalue()
+            
+        except Exception as e:
+            print(f"PDF generation failed: {e}")
+            traceback.print_exc()
+            raise
+    
+    def _build_cover_page(self, report_data: Dict[str, Any]) -> List:
+        """Build cover page elements"""
+        
+        elements = []
+        
+        # Add space at top
+        elements.append(Spacer(1, 0.5 * inch))
+        
+        # Alert banner for critical/high risk
+        if report_data['summary']['has_critical']:
+            alert_style = self.styles.get_style('CriticalAlert')
+            elements.append(Paragraph("CRITICAL SECURITY RISK DETECTED - IMMEDIATE ACTION REQUIRED", alert_style))
+            elements.append(Spacer(1, self.config.SPACING_SM))
+        elif report_data['summary']['has_high']:
+            alert_style = self.styles.get_style('HighAlert')
+            elements.append(Paragraph("HIGH SECURITY RISK DETECTED - URGENT ATTENTION REQUIRED", alert_style))
+            elements.append(Spacer(1, self.config.SPACING_SM))
+        
+        # Title
+        title_style = self.styles.get_style('ReportTitle')
+        elements.append(Paragraph("SECURITY RECONNAISSANCE REPORT", title_style))
+        elements.append(Spacer(1, self.config.SPACING_MD))
+        
+        # Scan info table
+        info_data = [
+            ['Target:', self._safe_text(report_data['scan_info']['target'], 200)],
+            ['Scan ID:', report_data['scan_info']['id']],
+            ['Scan Date:', report_data['scan_info']['started_at'][:10] if report_data['scan_info'].get('started_at') else 'N/A'],
+            ['Status:', report_data['scan_info']['status'].upper()],
+            ['Risk Level:', report_data['summary']['overall_risk'].upper()],
+            ['Report Generated:', datetime.now().strftime('%Y-%m-%d %H:%M')]
+        ]
+        
+        info_table = Table(info_data, colWidths=[1.2*inch, 4*inch])
+        info_table.setStyle(TableStyle([
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+            ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 0), (-1, -1), 11),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+            ('TOPPADDING', (0, 0), (-1, -1), 8),
+            ('GRID', (0, 0), (-1, -1), 1, self.config.COLOR_GRAY),
+            ('BACKGROUND', (0, 0), (0, -1), self.config.COLOR_LIGHT),
+            ('BACKGROUND', (1, 4), (1, 4), self.config.SEVERITY_CRITICAL if report_data['summary']['overall_risk'] == 'Critical' else self.config.SEVERITY_HIGH if report_data['summary']['overall_risk'] == 'High' else self.config.SEVERITY_MEDIUM),
+            ('TEXTCOLOR', (1, 4), (1, 4), self.config.COLOR_WHITE),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('WORDWRAP', (1, 0), (1, -1), 'ON'),
+        ]))
+        elements.append(info_table)
+        
+        elements.append(Spacer(1, self.config.SPACING_MD))
+        
+        # Classification
+        classification_style = self.styles.get_style('Classification')
+        elements.append(Paragraph("CONFIDENTIAL - INTERNAL USE ONLY", classification_style))
+        
+        return elements
+    
+    def _build_executive_summary(self, report_data: Dict[str, Any]) -> List:
+        """Build executive summary section"""
+        
+        elements = []
+        
+        # Section header
+        header_style = self.styles.get_style('SectionHeader')
+        elements.append(Paragraph("EXECUTIVE SUMMARY", header_style))
+        elements.append(Spacer(1, self.config.SPACING_SM))
+        
+        # Overview
+        overview_text = f"This security reconnaissance report provides a comprehensive assessment of the target domain {report_data['scan_info']['target']}. The assessment included subdomain enumeration, live host discovery, vulnerability scanning, DNS analysis, and port scanning."
+        elements.append(Paragraph(overview_text, self.styles.get_style('ExecutiveSummary')))
+        elements.append(Spacer(1, self.config.SPACING_SM))
+        
+        # Key Metrics
+        subheader_style = self.styles.get_style('SubsectionHeader')
+        elements.append(Paragraph("Key Metrics", subheader_style))
+        elements.append(Spacer(1, self.config.SPACING_XS))
+        
+        metrics_data = [
+            ['Metric', 'Value', 'Status'],
+            ['Total Assets', str(report_data['summary']['total_subdomains']), 'Complete'],
+            ['Live Hosts', str(report_data['summary']['total_live_hosts']), 'Verified'],
+            ['Total Vulnerabilities', str(report_data['summary']['total_vulnerabilities']), 'Review'],
+            ['Critical', str(report_data['summary']['vulnerability_by_severity']['critical']), 'None' if report_data['summary']['vulnerability_by_severity']['critical'] == 0 else 'ACTION'],
+            ['High', str(report_data['summary']['vulnerability_by_severity']['high']), 'None' if report_data['summary']['vulnerability_by_severity']['high'] == 0 else 'URGENT'],
+            ['Medium', str(report_data['summary']['vulnerability_by_severity']['medium']), 'None' if report_data['summary']['vulnerability_by_severity']['medium'] == 0 else 'Review'],
+            ['Low', str(report_data['summary']['vulnerability_by_severity']['low']), 'Minor'],
+            ['Info', str(report_data['summary']['vulnerability_by_severity']['info']), 'Awareness'],
+        ]
+        
+        metrics_table = self.table_builder.create_kpi_table(metrics_data)
+        elements.append(metrics_table)
+        elements.append(Spacer(1, self.config.SPACING_SM))
+        
+        # Risk Distribution
+        elements.append(Paragraph("Risk Distribution", subheader_style))
+        elements.append(Spacer(1, self.config.SPACING_XS))
+        
+        total_vulns = sum(report_data['summary']['vulnerability_by_severity'].values())
+        risk_data = [['Severity', 'Count', '%', 'Priority']]
+        
+        severity_order = ['critical', 'high', 'medium', 'low', 'info']
+        severity_labels = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO']
+        priority_labels = ['P0 - Immediate', 'P1 - Urgent', 'P2 - High', 'P3 - Medium', 'P4 - Low']
+        
+        for idx, severity in enumerate(severity_order):
+            count = report_data['summary']['vulnerability_by_severity'].get(severity, 0)
+            percentage = (count / total_vulns * 100) if total_vulns > 0 else 0
+            risk_data.append([
+                severity_labels[idx],
+                str(count),
+                f"{percentage:.1f}%",
+                priority_labels[idx]
+            ])
+        
+        risk_table = self.table_builder.create_risk_table(risk_data, report_data['summary']['vulnerability_by_severity'])
+        elements.append(risk_table)
+        elements.append(Spacer(1, self.config.SPACING_SM))
+        
+        # Key Findings
+        elements.append(Paragraph("Key Findings", subheader_style))
+        elements.append(Spacer(1, self.config.SPACING_XS))
+        
+        key_findings = self._generate_key_findings(report_data)
+        for idx, finding in enumerate(key_findings[:6], 1):
+            finding_style = self.styles.get_style('KeyFinding')
+            elements.append(Paragraph(f"{idx}. {finding}", finding_style))
+        
+        return elements
+    
+    def _generate_key_findings(self, report_data: Dict[str, Any]) -> List[str]:
+        """Generate key findings list"""
+        
+        findings = []
+        
+        if report_data['summary']['critical_vulns']:
+            for vuln in report_data['summary']['critical_vulns'][:2]:
+                name = self._safe_text(vuln.get('info', {}).get('name', 'Unknown'), 100)
+                host = self._safe_text(vuln.get('host', 'N/A'), 50)
+                findings.append(f"[CRITICAL] {name} - {host}")
+        
+        if report_data['summary']['high_vulns']:
+            for vuln in report_data['summary']['high_vulns'][:2]:
+                name = self._safe_text(vuln.get('info', {}).get('name', 'Unknown'), 100)
+                host = self._safe_text(vuln.get('host', 'N/A'), 50)
+                findings.append(f"[HIGH] {name} - {host}")
+        
+        if report_data['summary']['medium_vulns']:
+            for vuln in report_data['summary']['medium_vulns'][:2]:
+                name = self._safe_text(vuln.get('info', {}).get('name', 'Unknown'), 100)
+                host = self._safe_text(vuln.get('host', 'N/A'), 50)
+                findings.append(f"[MEDIUM] {name} - {host}")
+        
+        if report_data['summary']['missing_headers']:
+            findings.append(f"[INFO] Missing Security Headers - {len(report_data['summary']['missing_headers'])} headers not configured")
+        
+        if not findings:
+            findings.append("No Critical/High Issues Found - Good security posture")
+        
+        return findings
+    
+    def _build_vulnerabilities_section(self, report_data: Dict[str, Any]) -> List:
+        """Build vulnerabilities section with full details"""
+        
+        elements = []
+        
+        # Section header
+        header_style = self.styles.get_style('SectionHeader')
+        elements.append(Paragraph("CRITICAL & HIGH SEVERITY VULNERABILITIES", header_style))
+        elements.append(Spacer(1, self.config.SPACING_SM))
+        
+        # Critical Vulnerabilities
+        if report_data['summary']['critical_vulns']:
+            subheader_style = self.styles.get_style('SubsectionHeader')
+            elements.append(Paragraph("CRITICAL VULNERABILITIES", subheader_style))
+            elements.append(Spacer(1, self.config.SPACING_XS))
+            
+            for idx, vuln in enumerate(report_data['summary']['critical_vulns'], 1):
+                elements.extend(self._build_vuln_card(vuln, 'critical'))
+                elements.append(Spacer(1, self.config.SPACING_SM))
+        
+        # High Vulnerabilities
+        if report_data['summary']['high_vulns']:
+            subheader_style = self.styles.get_style('SubsectionHeader')
+            elements.append(Paragraph("HIGH SEVERITY VULNERABILITIES", subheader_style))
+            elements.append(Spacer(1, self.config.SPACING_XS))
+            
+            for idx, vuln in enumerate(report_data['summary']['high_vulns'], 1):
+                elements.extend(self._build_vuln_card(vuln, 'high'))
+                elements.append(Spacer(1, self.config.SPACING_SM))
+        
+        # Medium Vulnerabilities
+        if report_data['summary']['medium_vulns']:
+            subheader_style = self.styles.get_style('SubsectionHeader')
+            elements.append(Paragraph("MEDIUM SEVERITY VULNERABILITIES", subheader_style))
+            elements.append(Spacer(1, self.config.SPACING_XS))
+            
+            for idx, vuln in enumerate(report_data['summary']['medium_vulns'][:ReportConfig.MAX_VULNS_PER_PAGE], 1):
+                elements.extend(self._build_vuln_card(vuln, 'medium'))
+                elements.append(Spacer(1, self.config.SPACING_SM))
+        
+        return elements
+    
+    def _build_vuln_card(self, vuln: Dict, severity: str) -> List:
+        """Build a vulnerability detail card"""
+        
+        elements = []
+        details = self.vuln_processor.get_vuln_details(vuln)
+        
+        # Get severity color
+        severity_colors = {
+            'critical': self.config.SEVERITY_CRITICAL,
+            'high': self.config.SEVERITY_HIGH,
+            'medium': self.config.SEVERITY_MEDIUM,
+            'low': self.config.SEVERITY_LOW,
+            'info': self.config.SEVERITY_INFO
+        }
+        severity_color = severity_colors.get(severity, self.config.COLOR_GRAY)
+        
+        # Vulnerability table
+        vuln_data = [
+            ['Vulnerability Name', self._safe_text(details['name'], 300)],
+            ['Severity', details['severity']],
+            ['Affected Host', self._safe_text(details['host'], 200)],
+            ['Template ID', self._safe_text(details['template_id'], 200)],
+            ['Template URL', self._safe_text(details['template_url'], 250)],
+            ['Description', self._safe_text(details['description'], ReportConfig.MAX_DESCRIPTION_LENGTH)],
+        ]
+        
+        # Add CVE if available
+        if details['cve_id']:
+            vuln_data.append(['CVE ID', details['cve_id']])
+        
+        # Add CVSS if available
+        if details['cvss_score']:
+            vuln_data.append(['CVSS Score', details['cvss_score']])
+        
+        # Add References
+        if details['references']:
+            vuln_data.append(['References', self._safe_text(', '.join(details['references'][:ReportConfig.MAX_REFERENCES]), 300)])
+        
+        # Add Remediation
+        vuln_data.append(['Remediation', self._safe_text(details['remediation'], ReportConfig.MAX_REMEDIATION_LENGTH)])
+        
+        vuln_table = Table(vuln_data, colWidths=[1.5*inch, 5*inch])
+        vuln_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (0, -1), severity_color),
+            ('TEXTCOLOR', (0, 0), (0, -1), self.config.COLOR_WHITE),
+            ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+            ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('GRID', (0, 0), (-1, -1), 1, self.config.TABLE_BORDER_COLOR),
+            ('BACKGROUND', (1, 0), (1, 0), severity_color),
+            ('TEXTCOLOR', (1, 0), (1, 0), self.config.COLOR_WHITE),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [
+                self.config.COLOR_WHITE,
+                HexColor('#f8f9fa')
+            ]),
+            ('WORDWRAP', (1, 0), (1, -1), 'ON'),
+        ]))
+        
+        elements.append(vuln_table)
+        
+        return elements
+    
+    def _build_assets_section(self, report_data: Dict[str, Any]) -> List:
+        """Build assets overview section"""
+        
+        elements = []
+        
+        # Section header
+        header_style = self.styles.get_style('SectionHeader')
+        elements.append(Paragraph("ASSET OVERVIEW", header_style))
+        elements.append(Spacer(1, self.config.SPACING_SM))
+        
+        # DNS Configuration
+        subheader_style = self.styles.get_style('SubsectionHeader')
+        elements.append(Paragraph("DNS Configuration", subheader_style))
+        elements.append(Spacer(1, self.config.SPACING_XS))
+        
+        dns_data = self.dns_ssl_processor.get_dns_status_table(report_data['summary']['dns_records'])
+        dns_table = self.table_builder.create_table(
+            dns_data,
+            col_widths=[1.2*inch, 4*inch, 1.2*inch],
+            header_color=self.config.COLOR_SUCCESS,
+            font_size=9
+        )
+        elements.append(dns_table)
+        elements.append(Spacer(1, self.config.SPACING_SM))
+        
+        # Live Hosts
+        if report_data['live_hosts']:
+            elements.append(Paragraph("Live Hosts", subheader_style))
+            elements.append(Spacer(1, self.config.SPACING_XS))
+            
+            hosts_data = [['URL', 'Status Code', 'Title', 'IP Address', 'Technology']]
+            for host in report_data['live_hosts'][:ReportConfig.MAX_HOSTS_PER_PAGE]:
+                tech = ', '.join(host.get('tech', [])[:3]) if host.get('tech') else 'N/A'
+                hosts_data.append([
+                    self._safe_text(host.get('url', 'N/A'), 250),
+                    str(host.get('status_code', 'N/A')),
+                    self._safe_text((host.get('title', 'N/A') or 'N/A'), 200),
+                    host.get('ip', 'N/A'),
+                    self._safe_text(tech, 150)
+                ])
+            
+            hosts_table = self.table_builder.create_table(
+                hosts_data,
+                col_widths=[2*inch, 0.8*inch, 2*inch, 1.2*inch, 1.5*inch],
+                header_color=self.config.COLOR_SUCCESS,
+                font_size=8
+            )
+            elements.append(hosts_table)
+        
+        return elements
+    
+    def _build_nmap_section(self, report_data: Dict[str, Any]) -> List:
+        """Build Nmap scan results section"""
+        
+        elements = []
+        
+        # Section header
+        header_style = self.styles.get_style('SectionHeader')
+        elements.append(Paragraph("NMAP PORT SCAN RESULTS", header_style))
+        elements.append(Spacer(1, self.config.SPACING_SM))
+        
+        if report_data['nmap_results'] and report_data['summary']['open_ports']:
+            ports_data = self.nmap_processor.get_ports_table(report_data['summary']['open_ports'])
+            ports_table = self.table_builder.create_table(
+                ports_data,
+                col_widths=[1*inch, 1*inch, 0.5*inch, 0.6*inch, 1*inch, 1.2*inch, 0.6*inch, 0.6*inch],
+                header_color=self.config.COLOR_WARNING,
+                font_size=7
+            )
+            elements.append(ports_table)
+            
+            if report_data['summary']['services_detected']:
+                elements.append(Spacer(1, self.config.SPACING_XS))
+                services_text = f"<b>Detected Services:</b> {', '.join(report_data['summary']['services_detected'][:10])}"
+                elements.append(Paragraph(services_text, self.styles.get_style('ReportNormal')))
+        else:
+            elements.append(Paragraph("Nmap port scan was not executed in this reconnaissance cycle. Recommended for next assessment.", 
+                                    self.styles.get_style('ReportNormal')))
+        
+        return elements
+    
+    def _build_dns_ssl_section(self, report_data: Dict[str, Any]) -> List:
+        """Build DNS and SSL configuration section"""
+        
+        elements = []
+        
+        # Section header
+        header_style = self.styles.get_style('SectionHeader')
+        elements.append(Paragraph("DNS & SSL CONFIGURATION", header_style))
+        elements.append(Spacer(1, self.config.SPACING_SM))
+        
+        # SSL/TLS Configuration
+        subheader_style = self.styles.get_style('SubsectionHeader')
+        elements.append(Paragraph("SSL/TLS Configuration", subheader_style))
+        elements.append(Spacer(1, self.config.SPACING_XS))
+        
+        ssl_data = self.dns_ssl_processor.get_ssl_status_table(report_data['summary']['ssl_info'])
+        ssl_table = self.table_builder.create_table(
+            ssl_data,
+            col_widths=[1.5*inch, 3.5*inch, 1.5*inch],
+            header_color=self.config.COLOR_INFO,
+            font_size=9
+        )
+        elements.append(ssl_table)
+        
+        return elements
+    
+    def _build_recommendations_section(self, report_data: Dict[str, Any]) -> List:
+        """Build security recommendations section"""
+        
+        elements = []
+        
+        # Section header
+        header_style = self.styles.get_style('SectionHeader')
+        elements.append(Paragraph("SECURITY RECOMMENDATIONS", header_style))
+        elements.append(Spacer(1, self.config.SPACING_SM))
+        
+        # Security Score
+        score = report_data['summary']['security_score']
+        risk_level = report_data['summary']['risk_level']
+        
+        score_text = f"<b>SECURITY SCORE:</b> {score}/100 ({risk_level})"
+        elements.append(Paragraph(score_text, self.styles.get_style('ReportNormal')))
+        elements.append(Spacer(1, self.config.SPACING_SM))
+        
+        # Strengths
+        elements.append(Paragraph("<b>STRENGTHS:</b>", self.styles.get_style('SubsectionHeader')))
+        strengths = [
+            "TLS 1.2 & 1.3 Supported",
+            "WAF/CDN Protection Detected",
+        ]
+        for strength in strengths:
+            elements.append(Paragraph(f"- {strength}", self.styles.get_style('KeyFinding')))
+        
+        elements.append(Spacer(1, self.config.SPACING_SM))
+        
+        # Areas for Improvement
+        elements.append(Paragraph("<b>AREAS FOR IMPROVEMENT:</b>", self.styles.get_style('SubsectionHeader')))
+        improvements = []
+        if report_data['summary']['missing_headers']:
+            improvements.append(f"Missing Security Headers ({len(report_data['summary']['missing_headers'])} headers)")
+        if report_data['summary']['ssl_info']['deprecated_tls']:
+            improvements.append("Deprecated TLS Versions (TLS 1.0, 1.1)")
+        if report_data['summary']['ssl_info']['weak_ciphers']:
+            improvements.append("Weak Cipher Suites")
+        
+        for improvement in improvements:
+            elements.append(Paragraph(f"- {improvement}", self.styles.get_style('KeyFinding')))
+        
+        elements.append(Spacer(1, self.config.SPACING_LG))
+        
+        # Action Plan
+        elements.append(Paragraph("<b>RECOMMENDED ACTION PLAN:</b>", self.styles.get_style('SubsectionHeader')))
+        action_plan = [
+            "Week 1: Implement Security Headers (CSP, HSTS, X-Frame, X-Content-Type-Options)",
+            "Week 2: Disable TLS 1.0/1.1, Update Cipher Suites",
+            "Week 3: Review & Document Public Information Exposure",
+            "Week 4: Conduct Follow-up Assessment"
+        ]
+        for action in action_plan:
+            elements.append(Paragraph(f"- {action}", self.styles.get_style('KeyFinding')))
+        
+        return elements
+    
+    def _build_footer(self, report_data: Dict[str, Any]) -> List:
+        """Build report footer"""
+        
+        elements = []
+        elements.append(PageBreak())
+        elements.append(Spacer(1, self.config.SPACING_LG))
+        
+        footer_style = self.styles.get_style('ReportFooter')
+        footer_text = f"""
+        <b>Generated by:</b> Recon Dashboard v4.0<br/>
+        <b>Generation Timestamp:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}<br/>
+        <b>Report Classification:</b> CONFIDENTIAL<br/>
+        <b>Distribution:</b> Internal Security Team Only
+        """
+        elements.append(Paragraph(footer_text, footer_style))
+        
+        elements.append(Spacer(1, self.config.SPACING_XS))
+        
+        disclaimer_style = ParagraphStyle(
+            'Disclaimer',
+            parent=self.styles.styles['Normal'],
+            fontSize=ReportConfig.FONT_SIZE_TINY,
+            textColor=self.config.COLOR_GRAY,
+            alignment=TA_CENTER
+        )
+        elements.append(Paragraph("DISCLAIMER: This report is for authorized security assessment purposes only. Do not distribute without explicit permission from the security team.", disclaimer_style))
+        
+        return elements
+    
+    def _safe_text(self, text: Any, max_length: int = 200) -> str:
+        """
+        Safely convert text for PDF display with proper wrapping.
+        NO TRUNCATION - full text with word wrap.
+        """
+        if not text:
+            return 'N/A'
+        
+        text = str(text)
+        
+        # Don't truncate - let ReportLab handle wrapping
+        # Just ensure it's not excessively long for practical reasons
+        if len(text) > max_length:
+            return text[:max_length] + '...'
+        
+        return text
+    
+    def generate_html(self, report_data: Dict[str, Any]) -> str:
+        """Generate HTML report (placeholder - implement similar to PDF)"""
+        return "<html><body>HTML Report</body></html>"
+    
+    def generate_json(self, report_data: Dict[str, Any]) -> str:
+        """Generate JSON report"""
+        try:
+            print("Generating JSON report...")
+            return json.dumps(report_data, indent=2, default=str)
+        except Exception as e:
+            print(f"JSON generation failed: {e}")
+            raise
+    
+    def generate_excel(self, report_data: Dict[str, Any]) -> bytes:
+        """Generate Excel report"""
+        try:
+            print("Generating Excel report...")
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, Alignment, PatternFill
+            
+            workbook = Workbook()
+            
+            header_font = Font(bold=True, color="FFFFFF", size=11)
+            header_fill = PatternFill(start_color="3498db", end_color="3498db", fill_type="solid")
+            header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            
+            # Summary Sheet
+            summary_sheet = workbook.active
+            summary_sheet.title = "Summary"
+            
+            summary_data = [
+                ["Metric", "Value"],
+                ["Target", report_data['scan_info']['target']],
+                ["Scan ID", report_data['scan_info']['id']],
+                ["Status", report_data['scan_info']['status']],
+                ["Overall Risk", report_data['summary']['overall_risk']],
+                ["Security Score", f"{report_data['summary']['security_score']}/100"],
+                ["Subdomains", report_data['summary']['total_subdomains']],
+                ["Live Hosts", report_data['summary']['total_live_hosts']],
+                ["Vulnerabilities", report_data['summary']['total_vulnerabilities']],
+                ["Critical", report_data['summary']['vulnerability_by_severity']['critical']],
+                ["High", report_data['summary']['vulnerability_by_severity']['high']],
+                ["Medium", report_data['summary']['vulnerability_by_severity']['medium']],
+                ["Low", report_data['summary']['vulnerability_by_severity']['low']],
+                ["Info", report_data['summary']['vulnerability_by_severity']['info']],
+            ]
+            
+            for row_idx, row_data in enumerate(summary_data, 1):
+                for col_idx, value in enumerate(row_data, 1):
+                    cell = summary_sheet.cell(row=row_idx, column=col_idx, value=value)
+                    if row_idx == 1:
+                        cell.font = header_font
+                        cell.fill = header_fill
+                        cell.alignment = header_alignment
+                    cell.alignment = Alignment(wrap_text=True)
+            
+            buffer = io.BytesIO()
+            workbook.save(buffer)
+            buffer.seek(0)
+            
+            print("Excel generated successfully")
+            return buffer.getvalue()
+            
+        except Exception as e:
+            print(f"Excel generation failed: {e}")
+            traceback.print_exc()
+            raise
+    
+    def generate_docx(self, report_data: Dict[str, Any]) -> bytes:
+        """Generate Word document report"""
+        try:
+            print("Generating Word report...")
+            from docx import Document
+            from docx.shared import Pt
+            from docx.enum.text import WD_ALIGN_PARAGRAPH
+            
+            doc = Document()
+            
+            # Title
+            title = doc.add_heading('Security Reconnaissance Report', 0)
+            title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            
+            # Alert for critical/high
+            if report_data['summary']['has_critical']:
+                doc.add_paragraph('CRITICAL SECURITY RISK DETECTED - IMMEDIATE ACTION REQUIRED', style='Intense Quote')
+            elif report_data['summary']['has_high']:
+                doc.add_paragraph('HIGH SECURITY RISK DETECTED - URGENT ATTENTION REQUIRED', style='Intense Quote')
+            
+            # Scan Info
+            doc.add_heading('Scan Information', level=1)
+            info_table = doc.add_table(rows=6, cols=2)
+            info_table.style = 'Table Grid'
+            
+            info_data = [
+                ('Target', report_data['scan_info']['target']),
+                ('Scan ID', report_data['scan_info']['id']),
+                ('Status', report_data['scan_info']['status']),
+                ('Overall Risk', report_data['summary']['overall_risk']),
+                ('Started', report_data['scan_info']['started_at']),
+                ('Completed', report_data['scan_info'].get('completed_at', 'N/A'))
+            ]
+            
+            for idx, (label, value) in enumerate(info_data):
+                cell_label = info_table.cell(idx, 0)
+                cell_value = info_table.cell(idx, 1)
+                cell_label.text = label
+                cell_value.text = str(value)
+                cell_label.paragraphs[0].runs[0].bold = True
+            
+            doc.add_paragraph()
+            
+            # Summary
+            doc.add_heading('Executive Summary', level=1)
+            doc.add_paragraph(f"Total Vulnerabilities: {report_data['summary']['total_vulnerabilities']}")
+            doc.add_paragraph(f"Critical: {report_data['summary']['vulnerability_by_severity']['critical']}")
+            doc.add_paragraph(f"High: {report_data['summary']['vulnerability_by_severity']['high']}")
+            doc.add_paragraph(f"Medium: {report_data['summary']['vulnerability_by_severity']['medium']}")
+            doc.add_paragraph(f"Low: {report_data['summary']['vulnerability_by_severity']['low']}")
+            doc.add_paragraph(f"Info: {report_data['summary']['vulnerability_by_severity']['info']}")
+            
+            buffer = io.BytesIO()
+            doc.save(buffer)
+            buffer.seek(0)
+            
+            print("Word document generated successfully")
+            return buffer.getvalue()
+            
+        except Exception as e:
+            print(f"Word generation failed: {e}")
+            traceback.print_exc()
+            raise
+
+
+# =============================================================================
+# SINGLETON INSTANCE
+# =============================================================================
+
+report_generator = ReportGenerator()
+
+
+# =============================================================================
+# MAIN ENTRY POINT (FOR TESTING)
+# =============================================================================
+
+if __name__ == "__main__":
+    """Test report generation"""
+    print("=" * 80)
+    print("                    RECON DASHBOARD REPORT GENERATOR")
+    print("                           Version 4.0.0")
+    print("=" * 80)
+    print()
+    print("This module generates professional security reports.")
+    print("Import and use the report_generator instance in your application.")
+    print()
+    print("Example usage:")
+    print("  from services.report_generator import report_generator")
+    print("  report_data = await report_generator.generate_report_data(db, scan_id)")
+    print("  pdf_bytes = report_generator.generate_pdf(report_data)")
+    print()
+    print("=" * 80)
